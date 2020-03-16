@@ -1,13 +1,19 @@
 import sys
 import json
+import re
 
+import boto3
 import argparse
 import requests
-from tabulate import tabulate
 import logging
+
+from tabulate import tabulate
+from datetime import datetime
 
 
 BASE_URL = 'https://covidtracking.com'
+DATE_PATTERN = re.compile('^(.+)/(.+) ([0-9]{2}):([0-9]{2})$')
+YEAR = 2020
 
 URLS = {
     'states_current': '/api/states',
@@ -19,6 +25,28 @@ URLS = {
     'tracker_urls': '/api/urls',
 }
 
+DATE_FIELDS = [
+    'lastUpdateEt',
+    'checkTimeEt',
+]
+
+INT_FIELDS = [
+    'positive',
+    'negative',
+    'pending',
+    'death',
+    'total',
+]
+
+
+def store_data(data, table_name):
+    dynamodb = boto3.resource('dynamodb')
+    table = dynamodb.Table(table_name)
+
+    with table.batch_writer() as batch:
+        for row in data:
+            batch.put_item(Item=row)
+
 
 def get_data(base_url, endpoint):
     try:
@@ -29,7 +57,7 @@ def get_data(base_url, endpoint):
 
     if endpoint != 'tracker_urls':
         try:
-            data = data.json()
+            data = json.loads(data.text, cls=CustomJSONDecoder)
         except Exception as e:
             logging.error(f'Cannot parse JSON ({e})')
             raise
@@ -37,29 +65,81 @@ def get_data(base_url, endpoint):
     return data
 
 
+# dates look like '3/15 13:00', couldn't use datetime.strptime because there is
+# no non-zero-padded month,
+# pessimistically adding year as a param, since it's missing in the date
+def parse_date(compiled_pattern, date, year):
+    m = compiled_pattern.match(date)
+    if m:
+        dt = datetime(
+            year, int(m.group(1)), int(m.group(2)),
+            int(m.group(3)), int(m.group(4)),
+        )
+        return int(dt.timestamp())
+
+
+class CustomJSONDecoder(json.JSONDecoder):
+    def __init__(self, *args, **kwargs):
+        json.JSONDecoder.__init__(self, object_hook=self.object_hook, *args, **kwargs)
+    def object_hook(self, dict_):
+        for date_field in DATE_FIELDS:
+            if date_field in dict_:
+                dict_[f'ts{date_field}'] = parse_date(
+                    DATE_PATTERN, 
+                    dict_[date_field],
+                    YEAR,
+                )
+
+        for int_field in INT_FIELDS:
+            try:
+                dict_[int_field] = int(dict_[int_field])
+            except TypeError as e:
+                dict_[int_field] = 0
+
+        # this is for us_current
+        if 'lastUpdateEt' not in dict_:
+            now = datetime.now()
+            dict_['lastUpdateEt'] = now.strftime('%Y-%m-%d %H:%M:%S')
+            dict_['tslastUpdateEt'] = int(now.timestamp())
+
+        return dict_
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='simple tool to get COVID-19 data')
+    group = parser.add_mutually_exclusive_group()
 
-    parser.add_argument(
-        'report_type',
+    group.add_argument(
+        '--report-type',
         help='specify type of report: {}'.format(','.join(URLS.keys())),
+    )
+    group.add_argument(
+        '--test-lambda',
+        action='store_true',
+        help='only execute the lambda portion'
     )
 
     return parser.parse_args()
+
+
+def handler():
+    for report in ('us_current', 'states_current'):
+        data = get_data(BASE_URL, report)
+        store_data(data, report)
 
 
 def main():
     args = parse_args()
     logging.basicConfig(level=logging.INFO)
 
-    if hasattr(args, 'report_type') and args.report_type not in URLS.keys():
+    if hasattr(args, 'test_lambda'):
+        handler()
+    elif hasattr(args, 'report_type') and args.report_type not in URLS.keys():
         print('Need valid report type (one of: {})'.format(
             ','.join(URLS.keys())))
         return 1
-
-    data = get_data(BASE_URL, args.report_type)
-    headers = data[0].keys(),
-    print(tabulate(data, headers='keys'))
+    else:
+        print(tabulate(data, headers='keys'))
 
 
 if __name__ == '__main__':
