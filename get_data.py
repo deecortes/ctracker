@@ -1,3 +1,4 @@
+import os
 import sys
 import json
 import re
@@ -9,6 +10,7 @@ import logging
 
 from tabulate import tabulate
 from datetime import datetime
+from boto3.dynamodb.conditions import Key
 
 
 BASE_URL = 'https://covidtracking.com'
@@ -39,9 +41,8 @@ INT_FIELDS = [
 ]
 
 
-def store_data(data, table_name):
-    dynamodb = boto3.resource('dynamodb')
-    table = dynamodb.Table(table_name)
+def store_data(db, data, table_name):
+    table = db.Table(table_name)
 
     with table.batch_writer() as batch:
         for row in data:
@@ -125,12 +126,68 @@ def parse_args():
     return parser.parse_args()
 
 
+def get_state(data, state):
+    return [row for row in data if row['state'] == state][0]
+
+
+def get_states_old(db, state):
+    t = db.Table('states_current')
+    return t.query(
+        KeyConditionExpression=Key('state').eq(state),
+        ScanIndexForward=False,
+        Limit=1,
+    ).get('Items')[0]
+
+
+def get_us_old(db):
+    t = db.Table('us_current')
+    r = t.scan().get('Items')
+    return sorted(r, key=lambda i: i['tslastUpdateEt'], reverse=True)[0]
+
+
 def handler(event, context):
+    db = boto3.resource('dynamodb')
+    state = os.environ.get('STATE')
+    old_state_data = get_states_old(db, state)
+    old_us_data = get_us_old(db)
+    new_state_data = None
+    new_us_data = None
+
     for report in ('us_current', 'states_current'):
-        logging.info('Getting report {report}.')
+        logging.info(f'Getting report {report}.')
         data = get_data(BASE_URL, report)
-        logging.info('Storing data for report {report}.')
-        store_data(data, report)
+        logging.info(f'Storing data for report {report}.')
+        store_data(db, data, report)
+
+        if report == 'states_current':
+            new_state_data = get_state(data, state)
+        elif report == 'us_current':
+            new_us_data = data[0]
+
+    message = None
+    if new_state_data['positive'] > old_state_data['positive']:
+        message = "Alert: \n"
+        message += (
+            f'Infections in {state} have increased, '
+            f'from {old_state_data["positive"]} to '
+            f'{new_state_data["positive"]}. '
+        )
+
+    if new_us_data['positive'] > old_us_data['positive']:
+        message += (
+            f'Infections in the US have increased, '
+            f'from {old_us_data["positive"]} to '
+            f'{new_us_data["positive"]}. '
+        )
+
+    if message:
+        phone_numbers = os.environ.get('PHONE_NUMBERS').split(',')
+        sns = boto3.client('sns')
+        for phone_number in phone_numbers:
+            sns.publish(
+                PhoneNumber=phone_number,
+                Message=message,
+            )
 
     return {
         'statusCode': 200,
