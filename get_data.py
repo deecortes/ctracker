@@ -122,10 +122,17 @@ def parse_args():
     return parser.parse_args()
 
 
-def handler():
+def handler(event, context):
     for report in ('us_current', 'states_current'):
+        logging.info('Getting report {report}.')
         data = get_data(BASE_URL, report)
+        logging.info('Storing data for report {report}.')
         store_data(data, report)
+
+    return {
+        'statusCode': 200,
+        'body': 'OK',
+    }
 
 
 def main():
@@ -133,7 +140,7 @@ def main():
     logging.basicConfig(level=logging.INFO)
 
     if hasattr(args, 'test_lambda'):
-        handler()
+        handler(None, None)
     elif hasattr(args, 'report_type') and args.report_type not in URLS.keys():
         print('Need valid report type (one of: {})'.format(
             ','.join(URLS.keys())))
