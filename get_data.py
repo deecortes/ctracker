@@ -181,6 +181,7 @@ def handler(event, context):
         )
 
     if message:
+        print(message)
         phone_numbers = os.environ.get('PHONE_NUMBERS').split(',')
         sns = boto3.client('sns')
         for phone_number in phone_numbers:
