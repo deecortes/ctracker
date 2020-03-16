@@ -25,5 +25,5 @@ for table_name, value in TABLES.items():
         },
     )
 
-    table.meta.client.get_waiter('table_exists').wait(TableName='users')
+    table.meta.client.get_waiter('table_exists').wait(TableName=table_name)
     logging.info(f'Table {table_name} created.')
