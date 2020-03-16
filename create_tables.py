@@ -10,10 +10,10 @@ dynamodb = boto3.resource('dynamodb')
 
 for table_name, value in TABLES.items():
     logging.info(f'Creating table {table_name} ...')
-    index = [ { 'AttributeName': k,
-                'KeyType': v } for k, v in INDICES[table_name].items() ]
-    defs = [ { 'AttributeName': k,
-               'AttributeType': v } for k, v in value.items() ]
+    index = [{'AttributeName': k,
+              'KeyType': v} for k, v in INDICES[table_name].items()]
+    defs = [{'AttributeName': k,
+             'AttributeType': v} for k, v in value.items()]
 
     table = dynamodb.create_table(
         TableName=table_name,

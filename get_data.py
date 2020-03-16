@@ -80,12 +80,14 @@ def parse_date(compiled_pattern, date, year):
 
 class CustomJSONDecoder(json.JSONDecoder):
     def __init__(self, *args, **kwargs):
-        json.JSONDecoder.__init__(self, object_hook=self.object_hook, *args, **kwargs)
+        json.JSONDecoder.__init__(
+            self, object_hook=self.object_hook, *args, **kwargs)
+
     def object_hook(self, dict_):
         for date_field in DATE_FIELDS:
             if date_field in dict_:
                 dict_[f'ts{date_field}'] = parse_date(
-                    DATE_PATTERN, 
+                    DATE_PATTERN,
                     dict_[date_field],
                     YEAR,
                 )
@@ -93,7 +95,7 @@ class CustomJSONDecoder(json.JSONDecoder):
         for int_field in INT_FIELDS:
             try:
                 dict_[int_field] = int(dict_[int_field])
-            except TypeError as e:
+            except TypeError:
                 dict_[int_field] = 0
 
         # this is for us_current
@@ -106,7 +108,8 @@ class CustomJSONDecoder(json.JSONDecoder):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='simple tool to get COVID-19 data')
+    parser = argparse.ArgumentParser(
+        description='simple tool to get COVID-19 data')
     group = parser.add_mutually_exclusive_group()
 
     group.add_argument(
@@ -145,7 +148,8 @@ def main():
         print('Need valid report type (one of: {})'.format(
             ','.join(URLS.keys())))
         return 1
-    else:
+    elif hasattr(args, 'report_type'):
+        data = get_data(BASE_URL, args.report_type)
         print(tabulate(data, headers='keys'))
 
 
