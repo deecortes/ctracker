@@ -165,7 +165,7 @@ def handler(event, context):
         elif report == 'us_current':
             new_us_data = data[0]
 
-    message = None
+    message = ""
     if new_state_data['positive'] > old_state_data['positive']:
         message = "Alert: \n"
         message += (
