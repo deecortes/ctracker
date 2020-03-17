@@ -96,7 +96,8 @@ class CustomJSONDecoder(json.JSONDecoder):
         for int_field in INT_FIELDS:
             try:
                 dict_[int_field] = int(dict_[int_field])
-            except TypeError:
+            except (TypeError, KeyError) as e:
+                logging.info(f'Cannot clean int_field {int_field} ({e}).')
                 dict_[int_field] = 0
 
         # this is for us_current
