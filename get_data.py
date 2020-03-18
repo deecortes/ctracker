@@ -97,7 +97,7 @@ class CustomJSONDecoder(json.JSONDecoder):
             try:
                 dict_[int_field] = int(dict_[int_field])
             except (TypeError, KeyError) as e:
-                logging.info(f'Cannot clean int_field {int_field} ({e}).')
+                logging.debug(f'Cannot clean int_field {int_field} ({e}).')
                 dict_[int_field] = 0
 
         # this is for us_current
@@ -146,42 +146,41 @@ def get_us_old(db):
     return sorted(r, key=lambda i: i['tslastUpdateEt'], reverse=True)[0]
 
 
-def handler(event, context):
-    db = boto3.resource('dynamodb')
-    state = os.environ.get('STATE')
-    old_state_data = get_states_old(db, state)
+def analyze_us_data(db):
     old_us_data = get_us_old(db)
-    new_state_data = None
     new_us_data = None
 
-    for report in ('us_current', 'states_current'):
-        logging.info(f'Getting report {report}.')
-        data = get_data(BASE_URL, report)
-        logging.info(f'Storing data for report {report}.')
-        store_data(db, data, report)
+    logging.info('Getting report us_current.')
+    data = get_data(BASE_URL, 'us_current')
+    logging.info(f'Storing data for report us_current.')
+    store_data(db, data, 'us_current')
 
-        if report == 'states_current':
-            new_state_data = get_state(data, state)
-        elif report == 'us_current':
-            new_us_data = data[0]
+    new_us_data = data[0]
+    return (old_us_data, new_us_data)
+
+
+def analyze_state_data(db, state):
+    old_state_data = get_states_old(db, state)
+    data = get_data(BASE_URL, 'states_current')
+    new_state_data = get_state(data, state)
+
+    return (old_state_data, new_state_data)
+
+
+def send_sms(data, location):
+    (old, new) = data
 
     message = ""
-    if new_state_data['positive'] > old_state_data['positive']:
+    if new['positive'] > old['positive']:
         message = "Alert: \n"
         message += (
-            f'Infections in {state} have increased, '
-            f'from {old_state_data["positive"]} to '
-            f'{new_state_data["positive"]}. '
-        )
-
-    if new_us_data['positive'] > old_us_data['positive']:
-        message += (
-            f'Infections in the US have increased, '
-            f'from {old_us_data["positive"]} to '
-            f'{new_us_data["positive"]}. '
+            f'Infections in {location} have increased, '
+            f'from {old["positive"]} to '
+            f'{new["positive"]}. '
         )
 
     if message:
+        # just for lambda debugging
         print(message)
         phone_numbers = os.environ.get('PHONE_NUMBERS').split(',')
         sns = boto3.client('sns')
@@ -191,6 +190,21 @@ def handler(event, context):
                 Message=message,
             )
 
+
+def handler(event, context):
+    db = boto3.resource('dynamodb')
+
+    send_sms(analyze_us_data(db), 'the US')
+
+    states = os.environ.get('STATES').split(',')
+    for state in states:
+        logging.info(f'Working on state {state}.')
+        send_sms(analyze_state_data(db, state), state)
+
+    data = get_data(BASE_URL, 'states_current')
+    logging.info(f'Storing data for states_current.')
+    store_data(db, data, 'states_current')
+
     return {
         'statusCode': 200,
         'body': 'OK',
@@ -199,7 +213,10 @@ def handler(event, context):
 
 def main():
     args = parse_args()
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        stream=sys.stdout,
+        level=logging.INFO,
+    )
 
     if hasattr(args, 'test_lambda'):
         handler(None, None)
