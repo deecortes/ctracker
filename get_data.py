@@ -12,7 +12,6 @@ from tabulate import tabulate
 from datetime import datetime
 from boto3.dynamodb.conditions import Key
 
-
 BASE_URL = 'https://covidtracking.com'
 DATE_PATTERN = re.compile('^(.+)/(.+) ([0-9]{2}):([0-9]{2})$')
 YEAR = 2020
@@ -102,7 +101,7 @@ class CustomJSONDecoder(json.JSONDecoder):
 
         # this is for us_current
         if 'lastUpdateEt' not in dict_:
-            now = datetime.now()
+            now = datetime.utcnow()
             dict_['lastUpdateEt'] = now.strftime('%Y-%m-%d %H:%M:%S')
             dict_['tslastUpdateEt'] = int(now.timestamp())
 
@@ -121,6 +120,7 @@ def parse_args():
     group.add_argument(
         '--test-lambda',
         action='store_true',
+        default=False,
         help='only execute the lambda portion'
     )
 
@@ -128,30 +128,60 @@ def parse_args():
 
 
 def get_state(data, state):
-    return [row for row in data if row['state'] == state][0]
+    try:
+        state_data = [row for row in data if row['state'] == state][0]
+    except Exception as e:
+        logging.error(f'Could not get new data for state {state} ({e}).')
+        raise
+
+    return state_data
 
 
 def get_states_old(db, state):
     t = db.Table('states_current')
-    return t.query(
-        KeyConditionExpression=Key('state').eq(state),
-        ScanIndexForward=False,
-        Limit=1,
-    ).get('Items')[0]
+    try:
+        state_data = t.query(
+            KeyConditionExpression=Key('state').eq(state),
+            ScanIndexForward=False,
+            Limit=1,
+        ).get('Items')[0]
+    except Exception as e:
+        logging.error(f'Could not get old data for state {state} ({e}).')
+        raise
+
+    return state_data
 
 
 def get_us_old(db):
     t = db.Table('us_current')
     r = t.scan().get('Items')
-    return sorted(r, key=lambda i: i['tslastUpdateEt'], reverse=True)[0]
+    try:
+        data = sorted(r, key=lambda i: i['tslastUpdateEt'], reverse=True)[0]
+    except Exception as e:
+        logging.error(
+            f'Cannot get latest US data, by timestamp "tslastUpdateEt" ({e}).')
+        raise
+
+    logging.info(
+        f'Got us_current with latest timestamp {data["tslastUpdateEt"]}.')
+
+    return data
 
 
 def analyze_us_data(db):
-    old_us_data = get_us_old(db)
-    new_us_data = None
-
     logging.info('Getting report us_current.')
     data = get_data(BASE_URL, 'us_current')
+
+    try:
+        old_us_data = get_us_old(db)
+    except Exception:
+        logging.info(
+            'Failed to get old US data, probably empty db, '
+            'storing latest US data now.'
+        )
+        store_data(db, data, 'us_current')
+        return False
+
     logging.info(f'Storing data for report us_current.')
     store_data(db, data, 'us_current')
 
@@ -159,16 +189,12 @@ def analyze_us_data(db):
     return (old_us_data, new_us_data)
 
 
-def analyze_state_data(db, state):
-    old_state_data = get_states_old(db, state)
-    data = get_data(BASE_URL, 'states_current')
-    new_state_data = get_state(data, state)
-
-    return (old_state_data, new_state_data)
-
-
 def send_sms(data, location):
     (old, new) = data
+    logging.info(
+        f'Got old({old["positive"]})/new({new["positive"]}) '
+        f'for location {location}.'
+    )
 
     message = ""
     if new['positive'] > old['positive']:
@@ -192,16 +218,29 @@ def send_sms(data, location):
 
 
 def handler(event, context):
+    if len(logging.getLogger().handlers) > 0:
+        # The Lambda environment pre-configures a handler logging to stderr. If a
+        # handler is already configured, `.basicConfig` does not execute.
+        # Thus we set the level directly.
+        logging.getLogger().setLevel(logging.INFO)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
     db = boto3.resource('dynamodb')
 
-    send_sms(analyze_us_data(db), 'the US')
+    us_data = analyze_us_data(db)
+    if us_data:
+        send_sms(us_data, 'the US')
 
+    data = get_data(BASE_URL, 'states_current')
     states = os.environ.get('STATES').split(',')
     for state in states:
         logging.info(f'Working on state {state}.')
-        send_sms(analyze_state_data(db, state), state)
+        send_sms(
+            (get_states_old(db, state), get_state(data, state)),
+            state,
+        )
 
-    data = get_data(BASE_URL, 'states_current')
     logging.info(f'Storing data for states_current.')
     store_data(db, data, 'states_current')
 
@@ -213,12 +252,8 @@ def handler(event, context):
 
 def main():
     args = parse_args()
-    logging.basicConfig(
-        stream=sys.stdout,
-        level=logging.INFO,
-    )
 
-    if hasattr(args, 'test_lambda'):
+    if hasattr(args, 'test_lambda') and args.test_lambda:
         handler(None, None)
     elif hasattr(args, 'report_type') and args.report_type not in URLS.keys():
         print('Need valid report type (one of: {})'.format(
