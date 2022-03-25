@@ -7,7 +7,7 @@ The tool is meant to be run as a Lambda. This is just a hobby project, not
 meant for anything that needs reliable alerting, since it's missing a lot of
 things (error handling, terraform, ...).
 
-hello.
+hello, hello
 
 ## DynamoDB Tables and Fields
 
